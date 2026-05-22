@@ -15,10 +15,12 @@ class TransformerBlock(nn.Module):
         self.attn_norm = RMSNorm(config.d_model, eps=config.norm_eps)
         self.mlp_norm = RMSNorm(config.d_model, eps=config.norm_eps)
 
-    def forward(self, x: torch.Tensor, freqs_cis: torch.Tensor):
-        h = x + self.attn(self.attn_norm(x), freqs_cis)
+    def forward(self, x: torch.Tensor, freqs_cis: torch.Tensor, 
+                use_cache: bool = False, past_kv = None):
+        attn_out, new_past_kv = self.attn(self.attn_norm(x), freqs_cis, use_cache=use_cache, past_kv=past_kv)
+        h = x + attn_out
         out = h + self.mlp(self.mlp_norm(h))
-        return out
+        return out, new_past_kv
 
 class TransformerModel(nn.Module):
     def __init__(self, config: ModelConfig):
@@ -54,17 +56,28 @@ class TransformerModel(nn.Module):
         elif isinstance(module, nn.Embedding):
             torch.nn.init.normal_(module.weight, mean=0.0, std=0.02)
 
-    def forward(self, tokens: torch.Tensor, targets: torch.Tensor = None):
+    def forward(self, tokens: torch.Tensor, targets: torch.Tensor = None,
+                use_cache: bool = False, past_kvs: list = None):
         B, T = tokens.shape
-        assert T <= self.max_seq_len, f"Sequence length {T} exceeds maximum {self.max_seq_len}"
         
         h = self.tok_embeddings(tokens)
         h = self.drop(h)
         
-        freqs_cis = self.freqs_cis[:T]
+        if use_cache and past_kvs is not None:
+            # We are generating token by token. T is usually 1.
+            # The absolute position is the cache length + current sequence length
+            past_len = past_kvs[0][0].size(2)
+            freqs_cis = self.freqs_cis[past_len:past_len+T]
+        else:
+            freqs_cis = self.freqs_cis[:T]
         
-        for layer in self.layers:
-            h = layer(h, freqs_cis)
+        new_past_kvs = [] if use_cache else None
+        
+        for i, layer in enumerate(self.layers):
+            past_kv = past_kvs[i] if past_kvs is not None else None
+            h, new_past_kv = layer(h, freqs_cis, use_cache=use_cache, past_kv=past_kv)
+            if use_cache:
+                new_past_kvs.append(new_past_kv)
             
         h = self.norm(h)
         logits = self.output(h)
@@ -73,4 +86,6 @@ class TransformerModel(nn.Module):
         if targets is not None:
             loss = F.cross_entropy(logits.view(-1, logits.size(-1)), targets.view(-1))
             
+        if use_cache:
+            return logits, loss, new_past_kvs
         return logits, loss
