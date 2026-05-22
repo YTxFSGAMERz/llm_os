@@ -2,7 +2,7 @@ import os
 import torch
 from tokenizer import Tokenizer
 from data import get_dataloader
-from model import TransformerModel
+from model import ModelConfig, TransformerModel, generate
 import time
 
 def main():
@@ -51,13 +51,16 @@ def main():
         return x.to(device), y.to(device)
 
     # Init Model
-    model = TransformerModel(
+    config = ModelConfig(
         vocab_size=vocab_size,
         d_model=d_model,
         n_heads=n_heads,
+        n_kv_heads=n_heads, # Default to MHA for now, can be changed for GQA
         n_layers=n_layers,
         max_seq_len=seq_len
-    ).to(device)
+    )
+    
+    model = TransformerModel(config).to(device)
 
     print(f"Model parameters: {sum(p.numel() for p in model.parameters())/1e6:.2f} M")
 
@@ -99,7 +102,7 @@ def main():
     
     # Generate starting from newline
     context = torch.tensor([tokenizer.encode("\n", allowed_special="all")], dtype=torch.long, device=device)
-    generated_idx = model.generate(context, max_new_tokens=200)
+    generated_idx = generate(model, context, max_new_tokens=200)
     generated_text = tokenizer.decode(generated_idx[0].tolist())
     
     print("\n--- GENERATED TEXT ---")
